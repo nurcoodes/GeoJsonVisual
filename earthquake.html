@@ -77,8 +77,8 @@
     <table id="infoTable">
       <thead>
         <tr>
-          <th onclick="sortTable(0)">Place</th>
-          <th onclick="sortTable(1)">Magnitude</th>
+          <th onclick="sortTable(0)">Prefecture</th>
+          <th onclick="sortTable(1)"># Earthquakes</th>
         </tr>
       </thead>
       <tbody id="tableBody"></tbody>
@@ -120,8 +120,8 @@
       fetch('assets/earthquakes.geojson').then(res => res.json())
     ])
     .then(([japan, quakes]) => {
-      // Add Japan polygon layer
-      L.geoJSON(japan, {
+      // Add Japan prefecture polygons
+      const prefectureLayer = L.geoJSON(japan, {
         style: {
           color: '#0077b6',
           weight: 1,
@@ -130,9 +130,37 @@
         }
       }).addTo(map);
 
-      // Add earthquake points; keep reference so table rows can zoom to points
-      window.quakeFeatures = quakes.features || [];
-      const quakeLayer = L.geoJSON(quakes, {
+      // Prepare prefecture features
+      const prefectures = japan.features;
+
+      // For each earthquake, find which prefecture it is in (or null)
+      const quakeFeatures = (quakes.features || []).filter(f => f.geometry && f.geometry.type === 'Point');
+      const turfPoints = quakeFeatures.map(f => turf.point(f.geometry.coordinates, f.properties));
+      const prefectureQuakeMap = {};
+      prefectures.forEach(pref => {
+        prefectureQuakeMap[pref.properties.name] = [];
+      });
+      turfPoints.forEach((pt, i) => {
+        let found = false;
+        for (const pref of prefectures) {
+          if (turf.booleanPointInPolygon(pt, pref)) {
+            prefectureQuakeMap[pref.properties.name].push(quakeFeatures[i]);
+            found = true;
+            break;
+          }
+        }
+        // Optionally, could track earthquakes not in any prefecture
+      });
+
+      // Add earthquake points (only those in Japan)
+      const filteredQuakes = {
+        type: 'FeatureCollection',
+        features: quakeFeatures.filter((f, i) => {
+          // Only keep if in any prefecture
+          return turfPoints[i] && prefectures.some(pref => turf.booleanPointInPolygon(turfPoints[i], pref));
+        })
+      };
+      const quakeLayer = L.geoJSON(filteredQuakes, {
         pointToLayer: (feature, latlng) => {
           const mag = (feature.properties && feature.properties.mag) || 3;
           const color =
@@ -162,34 +190,38 @@
         console.warn('Could not auto-fit bounds:', e);
       }
 
-      // Populate sidebar table
-      populateTable(quakes);
+      // Populate sidebar table with prefecture counts
+      populateTable(prefectures, prefectureQuakeMap);
     })
     .catch(err => console.error('Error loading GeoJSON:', err));
 
-    // Fill sidebar table with top 30 earthquakes
-    function populateTable(quakes) {
+    // Sidebar table: all prefectures, with earthquake count (including zero)
+    function populateTable(prefectures, quakeMap) {
       const tbody = document.getElementById('tableBody');
-      const features = (quakes.features || [])
-        .filter(f => f.properties && typeof f.properties.mag === 'number')
-        .sort((a, b) => b.properties.mag - a.properties.mag)
-        .slice(0, 30);
-
       tbody.innerHTML = '';
-      features.forEach((f, i) => {
+      // Sort by count descending, then name
+      const sorted = [...prefectures].sort((a, b) => {
+        const ca = quakeMap[a.properties.name].length;
+        const cb = quakeMap[b.properties.name].length;
+        if (cb !== ca) return cb - ca;
+        return a.properties.name.localeCompare(b.properties.name);
+      });
+      sorted.forEach(pref => {
+        const name = pref.properties.name;
+        const count = quakeMap[name].length;
         const row = document.createElement('tr');
-        row.innerHTML = `\n          <td>${(f.properties && f.properties.place) || "Unknown"}</td>\n          <td>${f.properties.mag}</td>\n        `;
-        // store coordinates for quick zoom on click (GeoJSON coordinates are [lon, lat])
-        if (f.geometry && f.geometry.coordinates) {
-          row.dataset.lon = f.geometry.coordinates[0];
-          row.dataset.lat = f.geometry.coordinates[1];
-        }
+        row.innerHTML = `<td>${name}</td><td>${count}</td>`;
         row.style.cursor = 'pointer';
-        row.title = 'Click to zoom to earthquake on map';
+        row.title = count > 0 ? 'Click to zoom to prefecture and highlight earthquakes' : 'Click to zoom to prefecture';
         row.addEventListener('click', () => {
-          if (row.dataset.lat && row.dataset.lon) {
-            map.setView([parseFloat(row.dataset.lat), parseFloat(row.dataset.lon)], 8);
-          }
+          // Zoom to prefecture
+          const layer = L.geoJSON(pref);
+          try {
+            const bounds = layer.getBounds();
+            if (bounds && bounds.isValid && bounds.isValid()) {
+              map.fitBounds(bounds);
+            }
+          } catch (e) {}
         });
         tbody.appendChild(row);
       });
@@ -215,5 +247,6 @@
       rows.forEach(r => table.tBodies[0].appendChild(r));
     }
   </script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
 </body>
 </html>
