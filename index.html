@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DC Crime Incidents (Last 30 Days)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    html, body { height: 100%; margin: 0; font-family: Arial, sans-serif; }
+    #sidebar {
+      position: absolute;
+      left: 0; top: 0; width: 340px; height: 100%;
+      background: rgba(255,255,255,0.95);
+      overflow-y: auto; padding: 10px;
+      box-shadow: 2px 0 5px rgba(0,0,0,0.2); z-index: 400;
+    }
+    #map {
+      position: absolute;
+      top: 0; left: 340px;
+      width: calc(100% - 340px); height: 100%;
+    }
+    h2 { text-align: center; margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #ccc; padding: 6px; text-align: left; }
+    th { background-color: #f4f4f4; cursor: pointer; }
+    @media (max-width: 1024px) {
+      #sidebar { display: none; }
+      #map { left: 0; width: 100%; }
+    }
+    #sidebar { min-width: 220px; max-width: 400px; }
+    #legend { font-size: 13px; }
+    @media (max-width: 700px) {
+      #sidebar { width: 100vw; position: static; box-shadow: none; }
+      #map { width: 100vw; left: 0; }
+      body { padding: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="sidebar">
+    <h2>DC Crime Incidents (Last 30 Days)</h2>
+    <div id="legend" style="margin:10px 0 20px 0;"></div>
+    <table id="infoTable">
+      <thead>
+        <tr>
+          <th>Offense</th>
+          <th>Date</th>
+          <th>Block</th>
+        </tr>
+      </thead>
+      <tbody id="tableBody"></tbody>
+    </table>
+    <p style="font-size:12px;color:#666;margin-top:8px">Data: DC Open Data. <br> If data doesn't load, run a local server (e.g. <code>python -m http.server</code>).</p>
+  </div>
+  <script>
+    // Initialize map centered on Washington, DC
+    const map = L.map('map').setView([38.9072, -77.0369], 12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Color scale for offense type
+    function getCrimeColor(offense) {
+      if (!offense) return '#aaa';
+      const map = {
+        'HOMICIDE': '#800026',
+        'ASSAULT W/DANGEROUS WEAPON': '#E31A1C',
+        'ROBBERY': '#FC4E2A',
+        'SEX ABUSE': '#BD0026',
+        'MOTOR VEHICLE THEFT': '#FEB24C',
+        'THEFT F/AUTO': '#FD8D3C',
+        'THEFT/OTHER': '#FED976',
+        'BURGLARY': '#6baed6',
+        'ARSON': '#9e9ac8',
+        'OTHERS': '#aaa'
+      };
+      return map[offense.toUpperCase()] || '#aaa';
+    }
+
+    function crimeMarker(feature, latlng) {
+      return L.circleMarker(latlng, {
+        radius: 7,
+        fillColor: getCrimeColor(feature.properties.OFFENSE),
+        color: '#333',
+        weight: 1,
+        opacity: 1,
+        fillOpacity: 0.85
+      });
+    }
+
+    let geojsonLayer;
+    function loadDCCrime() {
+      fetch('assets/crime30days.geojson')
+        .then(res => res.json())
+        .then(data => {
+          geojsonLayer = L.geoJSON(data, {
+            pointToLayer: crimeMarker,
+            onEachFeature: function (feature, layer) {
+              const props = feature.properties;
+              const date = props.REPORT_DAT ? props.REPORT_DAT.split('T')[0] : '';
+              layer.bindPopup(
+                `<b>${props.OFFENSE}</b><br>${props.BLOCK}<br>${date}<br>Method: ${props.METHOD}<br>Shift: ${props.SHIFT}`
+              );
+              layer.on({
+                mouseover: function(e) { this.openPopup(); },
+                mouseout: function(e) { this.closePopup(); }
+              });
+            }
+          }).addTo(map);
+          try {
+            const bounds = geojsonLayer.getBounds();
+            if (bounds && bounds.isValid && bounds.isValid()) {
+              map.fitBounds(bounds);
+            }
+          } catch (e) { console.warn('Could not fit bounds:', e); }
+          populateTable(data);
+          renderLegend();
+        })
+        .catch(err => console.error('Error loading DC Crime GeoJSON:', err));
+    }
+
+    // Update table for DC crime
+    function populateTable(geojson) {
+      const tbody = document.getElementById('tableBody');
+      const features = (geojson.features || []);
+      tbody.innerHTML = '';
+      features.sort((a, b) => b.properties.REPORT_DAT.localeCompare(a.properties.REPORT_DAT));
+      features.forEach(f => {
+        const props = f.properties;
+        const date = props.REPORT_DAT ? props.REPORT_DAT.split('T')[0] : '';
+        const row = document.createElement('tr');
+        row.innerHTML = `<td>${props.OFFENSE}</td><td>${date}</td><td>${props.BLOCK}</td>`;
+        row.style.cursor = 'pointer';
+        row.title = 'Click to zoom to incident';
+        row.addEventListener('click', () => {
+          const marker = L.geoJSON(f, { pointToLayer: crimeMarker });
+          try {
+            const bounds = marker.getBounds();
+            if (bounds && bounds.isValid && bounds.isValid()) {
+              map.fitBounds(bounds);
+            }
+          } catch (e) {}
+        });
+        tbody.appendChild(row);
+      });
+    }
+
+    // Render legend for crime types
+    function renderLegend() {
+      const legend = document.getElementById('legend');
+      legend.innerHTML =
+        '<b>Crime Type</b><br>' +
+        '<i style="background:' + getCrimeColor('HOMICIDE') + '"></i> Homicide<br>' +
+        '<i style="background:' + getCrimeColor('ASSAULT W/DANGEROUS WEAPON') + '"></i> Assault w/ Weapon<br>' +
+        '<i style="background:' + getCrimeColor('ROBBERY') + '"></i> Robbery<br>' +
+        '<i style="background:' + getCrimeColor('SEX ABUSE') + '"></i> Sex Abuse<br>' +
+        '<i style="background:' + getCrimeColor('MOTOR VEHICLE THEFT') + '"></i> Motor Vehicle Theft<br>' +
+        '<i style="background:' + getCrimeColor('THEFT F/AUTO') + '"></i> Theft F/Auto<br>' +
+        '<i style="background:' + getCrimeColor('THEFT/OTHER') + '"></i> Theft/Other<br>' +
+        '<i style="background:' + getCrimeColor('BURGLARY') + '"></i> Burglary<br>' +
+        '<i style="background:' + getCrimeColor('ARSON') + '"></i> Arson<br>' +
+        '<i style="background:' + getCrimeColor('OTHERS') + '"></i> Others';
+    }
+
+    // Remove previous loader and call DC crime loader
+    loadDCCrime();
+  </script>
+</body>
+</html>

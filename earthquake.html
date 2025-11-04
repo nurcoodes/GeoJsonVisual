@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Earthquakes in Japan</title>
+
+  <!-- Leaflet CSS and JS (no token required) -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      font-family: Arial, sans-serif;
+    }
+
+    /* Sidebar on the left as required */
+    #sidebar {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 340px;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.95);
+      overflow-y: auto;
+      padding: 10px;
+      box-shadow: 2px 0 5px rgba(0,0,0,0.2);
+      z-index: 400;
+    }
+
+    /* Map shifted right to make room for left sidebar */
+    #map {
+      position: absolute;
+      top: 0;
+      left: 340px;
+      width: calc(100% - 340px);
+      height: 100%;
+    }
+
+    h2 {
+      text-align: center;
+      margin-top: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      border-bottom: 1px solid #ccc;
+      padding: 6px;
+      text-align: left;
+    }
+
+    th {
+      background-color: #f4f4f4;
+      cursor: pointer;
+    }
+
+    @media (max-width: 1024px) {
+      #sidebar { display: none; }
+      #map { left: 0; width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="sidebar">
+    <h2>Recent Earthquakes in Japan</h2>
+    <table id="infoTable">
+      <thead>
+        <tr>
+          <th onclick="sortTable(0)">Place</th>
+          <th onclick="sortTable(1)">Magnitude</th>
+        </tr>
+      </thead>
+      <tbody id="tableBody"></tbody>
+    </table>
+    <p style="font-size:12px;color:#666;margin-top:8px">If data doesn't load when opening this file directly (file://), run a local server (e.g. from project folder: <code>python -m http.server</code>) and open http://localhost:8000</p>
+  </div>
+
+  <script>
+    // --- Configuration ---
+    // Provide your Mapbox access token here to use Mapbox tiles. If left as the placeholder, the app will fall back to OpenStreetMap tiles.
+    const MAPBOX_TOKEN = '<YOUR_MAPBOX_ACCESS_TOKEN>';
+
+    // Initialize Leaflet map centered roughly on Japan
+    const map = L.map('map').setView([37.5, 138], 5);
+
+    // Choose tile provider: Mapbox if token provided, otherwise OpenStreetMap
+    if (MAPBOX_TOKEN && MAPBOX_TOKEN !== '<YOUR_MAPBOX_ACCESS_TOKEN>') {
+      L.tileLayer(`https://api.mapbox.com/styles/v1/{id}/tiles/{z}/{x}/{y}?access_token=${MAPBOX_TOKEN}`, {
+        id: 'mapbox/streets-v11',
+        tileSize: 512,
+        zoomOffset: -1,
+        maxZoom: 19,
+        attribution: 'Map data &copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors, Imagery © <a href="https://www.mapbox.com/">Mapbox</a>'
+      }).addTo(map);
+    } else {
+      // Fallback to OpenStreetMap (works without tokens)
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+      if (!MAPBOX_TOKEN || MAPBOX_TOKEN === '<YOUR_MAPBOX_ACCESS_TOKEN>') {
+        console.warn('Mapbox token not provided — using OpenStreetMap tiles. To use Mapbox tiles, set MAPBOX_TOKEN in the script.');
+      }
+    }
+
+    // Load both GeoJSON datasets asynchronously
+    Promise.all([
+      fetch('assets/japan.json').then(res => res.json()),
+      fetch('assets/earthquakes.geojson').then(res => res.json())
+    ])
+    .then(([japan, quakes]) => {
+      // Add Japan polygon layer
+      L.geoJSON(japan, {
+        style: {
+          color: '#0077b6',
+          weight: 1,
+          fillColor: '#74c0fc',
+          fillOpacity: 0.2
+        }
+      }).addTo(map);
+
+      // Add earthquake points; keep reference so table rows can zoom to points
+      window.quakeFeatures = quakes.features || [];
+      const quakeLayer = L.geoJSON(quakes, {
+        pointToLayer: (feature, latlng) => {
+          const mag = (feature.properties && feature.properties.mag) || 3;
+          const color =
+            mag >= 6 ? "red" :
+            mag >= 5 ? "orange" :
+            mag >= 4 ? "yellow" :
+            "green";
+          return L.circleMarker(latlng, {
+            radius: Math.max(4, mag * 2),
+            fillColor: color,
+            color: color,
+            weight: 1,
+            fillOpacity: 0.8
+          }).bindPopup(
+            `<b>${(feature.properties && feature.properties.place) || "Unknown location"}</b><br>Magnitude: ${mag}`
+          );
+        }
+      }).addTo(map);
+
+      // Auto-zoom to data (only if bounds valid)
+      try {
+        const bounds = quakeLayer.getBounds();
+        if (bounds && bounds.isValid && bounds.isValid()) {
+          map.fitBounds(bounds);
+        }
+      } catch (e) {
+        console.warn('Could not auto-fit bounds:', e);
+      }
+
+      // Populate sidebar table
+      populateTable(quakes);
+    })
+    .catch(err => console.error('Error loading GeoJSON:', err));
+
+    // Fill sidebar table with top 30 earthquakes
+    function populateTable(quakes) {
+      const tbody = document.getElementById('tableBody');
+      const features = (quakes.features || [])
+        .filter(f => f.properties && typeof f.properties.mag === 'number')
+        .sort((a, b) => b.properties.mag - a.properties.mag)
+        .slice(0, 30);
+
+      tbody.innerHTML = '';
+      features.forEach((f, i) => {
+        const row = document.createElement('tr');
+        row.innerHTML = `\n          <td>${(f.properties && f.properties.place) || "Unknown"}</td>\n          <td>${f.properties.mag}</td>\n        `;
+        // store coordinates for quick zoom on click (GeoJSON coordinates are [lon, lat])
+        if (f.geometry && f.geometry.coordinates) {
+          row.dataset.lon = f.geometry.coordinates[0];
+          row.dataset.lat = f.geometry.coordinates[1];
+        }
+        row.style.cursor = 'pointer';
+        row.title = 'Click to zoom to earthquake on map';
+        row.addEventListener('click', () => {
+          if (row.dataset.lat && row.dataset.lon) {
+            map.setView([parseFloat(row.dataset.lat), parseFloat(row.dataset.lon)], 8);
+          }
+        });
+        tbody.appendChild(row);
+      });
+    }
+
+    // Sorting function for table columns
+    function sortTable(n) {
+      const table = document.getElementById("infoTable");
+      let rows = Array.from(table.tBodies[0].rows);
+      const asc = table.asc = !table.asc;
+      rows.sort((a, b) => {
+        const x = a.cells[n].innerText.trim();
+        const y = b.cells[n].innerText.trim();
+        // If sorting magnitude column (index 1), sort numerically
+        if (n === 1) {
+          const nx = parseFloat(x) || 0;
+          const ny = parseFloat(y) || 0;
+          return asc ? nx - ny : ny - nx;
+        }
+        // Otherwise sort as strings
+        return asc ? x.localeCompare(y) : y.localeCompare(x);
+      });
+      rows.forEach(r => table.tBodies[0].appendChild(r));
+    }
+  </script>
+</body>
+</html>
