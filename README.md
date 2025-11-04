@@ -46,6 +46,3 @@ You can use this page as a template for other point-based GeoJSON visualizations
 
 ## Dependencies
 - [Leaflet.js](https://leafletjs.com/) (loaded via CDN)
-
-## License
-MIT
